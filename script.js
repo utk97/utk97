@@ -138,27 +138,67 @@
     const firstScript = document.getElementsByTagName('script')[0];
     firstScript.parentNode.insertBefore(tag, firstScript);
 
+    /*
+     * Autoplay strategy:
+     *  1. Start muted (browsers allow muted autoplay without user gesture).
+     *  2. Once actually playing, gradually unmute to target volume.
+     *  3. On any user interaction, ensure unmuted + playing.
+     */
+    let startedMuted = false;
+
     window.onYouTubeIframeAPIReady = function () {
         player = new YT.Player('youtube-player', {
             height: '1',
             width: '1',
             videoId: 't1dvrcqlQgI',
             playerVars: {
-                autoplay: 0,
+                autoplay: 1,
                 loop: 1,
                 playlist: 't1dvrcqlQgI',
                 controls: 0,
                 showinfo: 0,
                 modestbranding: 1,
-                rel: 0
+                rel: 0,
+                mute: 1           // ← muted so autoplay is allowed
             },
             events: {
-                onReady: function () {
-                    player.setVolume(30);
+                onReady: function (event) {
+                    // Muted autoplay — should succeed in all browsers
+                    event.target.mute();
+                    event.target.setVolume(30);
+                    event.target.playVideo();
+                    startedMuted = true;
+                    musicToggle.classList.add('playing');
+                    musicStatus.textContent = 'Pause';
+                    musicPlaying = true;
+                },
+                onStateChange: function (event) {
+                    if (event.data === YT.PlayerState.PLAYING) {
+                        musicToggle.classList.add('playing');
+                        musicStatus.textContent = 'Pause';
+                        musicPlaying = true;
+                        // If we started muted, try to unmute now
+                        if (startedMuted) {
+                            tryUnmute();
+                        }
+                    }
+                    if (event.data === YT.PlayerState.PAUSED && musicPlaying) {
+                        // Don't update UI for brief pauses during mute toggle
+                    }
                 }
             }
         });
     };
+
+    // Attempt to unmute. Browsers may block this until a user gesture.
+    function tryUnmute() {
+        if (!player || !startedMuted) return;
+        try {
+            player.unMute();
+            player.setVolume(30);
+            startedMuted = false; // successfully unmuted
+        } catch (e) { /* will retry on user interaction */ }
+    }
 
     musicToggle.addEventListener('click', function () {
         if (!player || typeof player.playVideo !== 'function') return;
@@ -169,6 +209,8 @@
             musicStatus.textContent = 'Play';
             musicPlaying = false;
         } else {
+            // Ensure unmuted when user explicitly clicks play
+            if (startedMuted) tryUnmute();
             player.playVideo();
             musicToggle.classList.add('playing');
             musicStatus.textContent = 'Pause';
@@ -176,25 +218,26 @@
         }
     });
 
-    // Auto-play music on first meaningful interaction
-    let hasInteracted = false;
-    function autoPlayOnce() {
-        if (hasInteracted) return;
-        hasInteracted = true;
-        if (player && typeof player.playVideo === 'function') {
-            setTimeout(() => {
+    // On first user interaction, unmute if we started muted
+    function unmuteOnInteraction() {
+        if (startedMuted && player && typeof player.unMute === 'function') {
+            tryUnmute();
+            // Also ensure playing in case it somehow paused
+            if (!musicPlaying) {
                 player.playVideo();
                 musicToggle.classList.add('playing');
                 musicStatus.textContent = 'Pause';
                 musicPlaying = true;
-            }, 500);
+            }
         }
-        document.removeEventListener('click', autoPlayOnce);
-        document.removeEventListener('scroll', autoPlayOnce);
+        document.removeEventListener('click', unmuteOnInteraction);
+        document.removeEventListener('scroll', unmuteOnInteraction);
+        document.removeEventListener('keydown', unmuteOnInteraction);
     }
 
-    document.addEventListener('click', autoPlayOnce, { once: true });
-    document.addEventListener('scroll', autoPlayOnce, { once: true });
+    document.addEventListener('click', unmuteOnInteraction, { once: true });
+    document.addEventListener('scroll', unmuteOnInteraction, { once: true });
+    document.addEventListener('keydown', unmuteOnInteraction, { once: true });
 
     /* ==========================================================
        5. SMOOTH SCROLL FOR HERO ARROW
@@ -211,20 +254,20 @@
     }
 
     /* ==========================================================
-       6. PARALLAX EFFECT ON HERO
+       6. PARALLAX EFFECT ON HERO POLAROIDS
        ========================================================== */
-    const heroBg = document.querySelector('.hero-bg');
-    if (heroBg) {
+    const heroPolaroids = document.querySelector('.hero-polaroids');
+    if (heroPolaroids) {
         window.addEventListener('scroll', () => {
             const scrollY = window.scrollY;
             if (scrollY < window.innerHeight * 1.5) {
-                heroBg.style.transform = `scale(1.1) translateY(${scrollY * 0.3}px)`;
+                heroPolaroids.style.transform = `translateY(${scrollY * 0.25}px)`;
             }
         }, { passive: true });
     }
 
     /* ==========================================================
-       7. "NO" BUTTON — RUNAWAY BEHAVIOR
+       7. "NO" BUTTON — RUNAWAY BEHAVIOR (proximity-based)
        ========================================================== */
     const noBtn = document.getElementById('no-btn');
     const yesBtn = document.getElementById('yes-btn');
@@ -233,19 +276,21 @@
     let noHoverCount = 0;
     let noDisappeared = false;
     let isRunaway = false;
+    let noMoving = false; // debounce flag
+
+    // Threshold: how close the cursor needs to get before the button flees
+    const FLEE_DISTANCE = 100;
 
     function getSafeRandomPosition() {
-        // Get viewport dimensions with safe padding
         const vw = window.innerWidth;
         const vh = window.innerHeight;
-        const btnWidth = noBtn.offsetWidth || 120;
-        const btnHeight = noBtn.offsetHeight || 50;
-        const padding = 30;
+        const btnWidth = noBtn.offsetWidth || 130;
+        const btnHeight = noBtn.offsetHeight || 55;
+        const padding = 40;
 
-        // Keep within visible viewport bounds
         const minX = padding;
         const maxX = vw - btnWidth - padding;
-        const minY = padding + 60; // Below music toggle
+        const minY = padding + 60;
         const maxY = vh - btnHeight - padding;
 
         const x = Math.random() * (maxX - minX) + minX;
@@ -253,48 +298,127 @@
         return { x, y };
     }
 
-    function moveNoButton() {
-        if (noDisappeared) return;
+    // Get distance from mouse to button center
+    function getDistToBtn(mx, my) {
+        const rect = noBtn.getBoundingClientRect();
+        const cx = rect.left + rect.width / 2;
+        const cy = rect.top + rect.height / 2;
+        return Math.sqrt((mx - cx) ** 2 + (my - cy) ** 2);
+    }
+
+    // Flee AWAY from the cursor to a new position
+    function fleeFrom(mx, my) {
+        if (noDisappeared || noMoving) return;
+        noMoving = true;
         noHoverCount++;
 
-        if (noHoverCount >= 7) {
-            // EXTRAVAGANT EXPLOSION
+        if (noHoverCount >= 2) {
             triggerExplosion();
             return;
         }
 
-        if (noHoverCount >= 5) {
-            noBtn.classList.add('shrinking');
-            setTimeout(() => noBtn.classList.remove('shrinking'), 500);
-        }
-
         // Switch to fixed positioning on first runaway
+        // Move button to body to escape any ancestor transforms (AOS sets transform
+        // on .valentine-content which breaks position:fixed containment)
         if (!isRunaway) {
             isRunaway = true;
-            noBtn.classList.add('runaway');
+            const rect = noBtn.getBoundingClientRect();
+            document.body.appendChild(noBtn);
+            noBtn.style.position = 'fixed';
+            noBtn.style.left = rect.left + 'px';
+            noBtn.style.top = rect.top + 'px';
+            noBtn.style.margin = '0';
+            noBtn.style.zIndex = '9997';
         }
 
-        // Move to a safe random position within viewport
-        const pos = getSafeRandomPosition();
-        const scale = Math.max(0.5, 1 - noHoverCount * 0.07);
-        noBtn.style.left = pos.x + 'px';
-        noBtn.style.top = pos.y + 'px';
-        noBtn.style.transform = `scale(${scale})`;
+        // Calculate flee direction (away from mouse)
+        const rect = noBtn.getBoundingClientRect();
+        const cx = rect.left + rect.width / 2;
+        const cy = rect.top + rect.height / 2;
+        let angle = Math.atan2(cy - my, cx - mx); // direction AWAY from cursor
+        // Add some randomness to the angle
+        angle += (Math.random() - 0.5) * 1.2;
+
+        const fleeDistance = 200 + Math.random() * 150;
+        let newX = cx + Math.cos(angle) * fleeDistance - rect.width / 2;
+        let newY = cy + Math.sin(angle) * fleeDistance - rect.height / 2;
+
+        // Clamp within viewport
+        const pad = 40;
+        const btnW = rect.width;
+        const btnH = rect.height;
+        newX = Math.max(pad, Math.min(window.innerWidth - btnW - pad, newX));
+        newY = Math.max(pad + 50, Math.min(window.innerHeight - btnH - pad, newY));
+
+        // If still too close to cursor, pick a random safe spot instead
+        const distAfter = Math.sqrt((mx - (newX + btnW / 2)) ** 2 + (my - (newY + btnH / 2)) ** 2);
+        if (distAfter < FLEE_DISTANCE * 1.5) {
+            const safe = getSafeRandomPosition();
+            newX = safe.x;
+            newY = safe.y;
+        }
+
+        // Animate smoothly using CSS transition
+        noBtn.style.transition = 'left 0.35s cubic-bezier(.25,.8,.25,1), top 0.35s cubic-bezier(.25,.8,.25,1), transform 0.35s ease';
+        noBtn.style.left = newX + 'px';
+        noBtn.style.top = newY + 'px';
+        noBtn.style.transform = 'scale(0.9)';
+
+        // Allow next flee after transition completes
+        setTimeout(() => { noMoving = false; }, 380);
     }
+
+    // Global mousemove listener: detect proximity to No button
+    document.addEventListener('mousemove', function (e) {
+        if (noDisappeared || noMoving) return;
+        // Only start fleeing after the valentine section is near-visible
+        if (!isRunaway) {
+            const rect = noBtn.getBoundingClientRect();
+            // Only activate when button is in viewport
+            if (rect.top > window.innerHeight || rect.bottom < 0) return;
+        }
+        const dist = getDistToBtn(e.clientX, e.clientY);
+        if (dist < FLEE_DISTANCE) {
+            fleeFrom(e.clientX, e.clientY);
+        }
+    });
+
+    // Touch support
+    document.addEventListener('touchmove', function (e) {
+        if (noDisappeared || noMoving) return;
+        const touch = e.touches[0];
+        const dist = getDistToBtn(touch.clientX, touch.clientY);
+        if (dist < FLEE_DISTANCE * 1.5) {
+            fleeFrom(touch.clientX, touch.clientY);
+        }
+    }, { passive: true });
+
+    // Prevent clicking No
+    noBtn.addEventListener('click', function (e) {
+        e.preventDefault();
+        fleeFrom(e.clientX, e.clientY);
+    });
+
+    noBtn.addEventListener('touchstart', function (e) {
+        e.preventDefault();
+        const touch = e.touches[0];
+        fleeFrom(touch.clientX, touch.clientY);
+    });
 
     function triggerExplosion() {
         const rect = noBtn.getBoundingClientRect();
         const cx = rect.left + rect.width / 2;
         const cy = rect.top + rect.height / 2;
 
-        // 1. Add exploding animation to button
+        // Remove transitions so explosion animation plays immediately
+        noBtn.style.transition = 'none';
         noBtn.classList.add('exploding');
 
-        // 2. Screen shake
+        // Screen shake
         document.body.style.animation = 'screenShake 0.5s ease';
         setTimeout(() => { document.body.style.animation = ''; }, 500);
 
-        // 3. Flash overlay at explosion point
+        // Flash overlay at explosion point
         const flash = document.createElement('div');
         flash.className = 'explosion-flash';
         flash.style.setProperty('--cx', cx + 'px');
@@ -302,7 +426,7 @@
         document.body.appendChild(flash);
         setTimeout(() => flash.remove(), 600);
 
-        // 4. Shockwave rings (3 waves)
+        // Shockwave rings
         for (let i = 0; i < 3; i++) {
             setTimeout(() => {
                 const ring = document.createElement('div');
@@ -314,12 +438,12 @@
             }, i * 150);
         }
 
-        // 5. Massive heart particle burst — 3 waves of particles
+        // Heart particle bursts
         createExplosionParticles(cx, cy, 30, 'heart-particle-large', 150);
         setTimeout(() => createExplosionParticles(cx, cy, 20, 'heart-particle-small', 250), 100);
         setTimeout(() => createExplosionParticles(cx, cy, 10, 'heart-particle-ring', 300), 250);
 
-        // 6. Confetti burst at the explosion point
+        // Confetti
         if (typeof confetti === 'function') {
             confetti({
                 particleCount: 80,
@@ -341,7 +465,7 @@
             }, 200);
         }
 
-        // 7. Remove button and show hint
+        // Remove button and show hint
         setTimeout(() => {
             noBtn.style.display = 'none';
             noDisappeared = true;
@@ -368,18 +492,6 @@
             setTimeout(() => particle.remove(), 2000);
         }
     }
-
-    noBtn.addEventListener('mouseenter', moveNoButton);
-    noBtn.addEventListener('touchstart', function (e) {
-        e.preventDefault();
-        moveNoButton();
-    });
-
-    // Prevent actual click on No
-    noBtn.addEventListener('click', function (e) {
-        e.preventDefault();
-        moveNoButton();
-    });
 
     /* ==========================================================
        8. "YES" BUTTON — CELEBRATION
