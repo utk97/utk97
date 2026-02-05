@@ -254,14 +254,14 @@
     }
 
     /* ==========================================================
-       6. PARALLAX EFFECT ON HERO POLAROIDS
+       6. PARALLAX EFFECT ON HERO
        ========================================================== */
-    const heroPolaroids = document.querySelector('.hero-polaroids');
-    if (heroPolaroids) {
+    const heroBg = document.querySelector('.hero-bg');
+    if (heroBg) {
         window.addEventListener('scroll', () => {
             const scrollY = window.scrollY;
             if (scrollY < window.innerHeight * 1.5) {
-                heroPolaroids.style.transform = `translateY(${scrollY * 0.25}px)`;
+                heroBg.style.transform = `scale(1.1) translateY(${scrollY * 0.3}px)`;
             }
         }, { passive: true });
     }
@@ -319,16 +319,32 @@
 
         // Switch to fixed positioning on first runaway
         // Move button to body to escape any ancestor transforms (AOS sets transform
-        // on .valentine-content which breaks position:fixed containment)
+        // on .valentine-content which breaks position:fixed containment & getBoundingClientRect)
         if (!isRunaway) {
             isRunaway = true;
-            const rect = noBtn.getBoundingClientRect();
             document.body.appendChild(noBtn);
             noBtn.style.position = 'fixed';
-            noBtn.style.left = rect.left + 'px';
-            noBtn.style.top = rect.top + 'px';
             noBtn.style.margin = '0';
             noBtn.style.zIndex = '9997';
+            // Place at a random safe position far from cursor (original rect is unreliable due to AOS transform)
+            const safe = getSafeRandomPosition();
+            // Ensure it's far from mouse
+            let attempts = 0;
+            let pos = safe;
+            while (attempts < 10) {
+                const dx = mx - (pos.x + (noBtn.offsetWidth || 130) / 2);
+                const dy = my - (pos.y + (noBtn.offsetHeight || 55) / 2);
+                if (Math.sqrt(dx * dx + dy * dy) > FLEE_DISTANCE * 2) break;
+                pos = getSafeRandomPosition();
+                attempts++;
+            }
+            noBtn.style.left = pos.x + 'px';
+            noBtn.style.top = pos.y + 'px';
+            noBtn.style.transition = 'none'; // instant first placement
+            noBtn.style.transform = 'scale(0.9)';
+            // Allow next flee after a brief pause
+            setTimeout(() => { noMoving = false; }, 100);
+            return;
         }
 
         // Calculate flee direction (away from mouse)
@@ -368,15 +384,18 @@
         setTimeout(() => { noMoving = false; }, 380);
     }
 
-    // Global mousemove listener: detect proximity to No button
+    // FIRST FLEE: triggered by mouseenter on the button itself
+    // (getBoundingClientRect is unreliable while inside AOS-transformed parent,
+    //  but the browser fires mouseenter correctly regardless)
+    noBtn.addEventListener('mouseenter', function (e) {
+        if (noDisappeared || noMoving || isRunaway) return;
+        fleeFrom(e.clientX, e.clientY);
+    });
+
+    // SUBSEQUENT FLEES (after button is on body with position:fixed):
+    // use proximity-based detection since getBoundingClientRect is now reliable
     document.addEventListener('mousemove', function (e) {
-        if (noDisappeared || noMoving) return;
-        // Only start fleeing after the valentine section is near-visible
-        if (!isRunaway) {
-            const rect = noBtn.getBoundingClientRect();
-            // Only activate when button is in viewport
-            if (rect.top > window.innerHeight || rect.bottom < 0) return;
-        }
+        if (noDisappeared || noMoving || !isRunaway) return;
         const dist = getDistToBtn(e.clientX, e.clientY);
         if (dist < FLEE_DISTANCE) {
             fleeFrom(e.clientX, e.clientY);
@@ -384,8 +403,14 @@
     });
 
     // Touch support
+    noBtn.addEventListener('touchstart', function (e) {
+        e.preventDefault();
+        const touch = e.touches[0];
+        fleeFrom(touch.clientX, touch.clientY);
+    });
+
     document.addEventListener('touchmove', function (e) {
-        if (noDisappeared || noMoving) return;
+        if (noDisappeared || noMoving || !isRunaway) return;
         const touch = e.touches[0];
         const dist = getDistToBtn(touch.clientX, touch.clientY);
         if (dist < FLEE_DISTANCE * 1.5) {
@@ -397,12 +422,6 @@
     noBtn.addEventListener('click', function (e) {
         e.preventDefault();
         fleeFrom(e.clientX, e.clientY);
-    });
-
-    noBtn.addEventListener('touchstart', function (e) {
-        e.preventDefault();
-        const touch = e.touches[0];
-        fleeFrom(touch.clientX, touch.clientY);
     });
 
     function triggerExplosion() {
