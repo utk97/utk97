@@ -139,66 +139,44 @@
     firstScript.parentNode.insertBefore(tag, firstScript);
 
     /*
-     * Autoplay strategy:
-     *  1. Start muted (browsers allow muted autoplay without user gesture).
-     *  2. Once actually playing, gradually unmute to target volume.
-     *  3. On any user interaction, ensure unmuted + playing.
+     * Simple manual-play flow:
+     *  - Music does NOT autoplay.
+     *  - Button says "Play" with a subtle CSS glow animation to draw attention.
+     *  - User clicks Play → music starts, button switches to "Pause".
      */
-    let startedMuted = false;
-
     window.onYouTubeIframeAPIReady = function () {
         player = new YT.Player('youtube-player', {
             height: '1',
             width: '1',
             videoId: 't1dvrcqlQgI',
             playerVars: {
-                autoplay: 1,
+                autoplay: 0,
                 loop: 1,
                 playlist: 't1dvrcqlQgI',
                 controls: 0,
                 showinfo: 0,
                 modestbranding: 1,
-                rel: 0,
-                mute: 1           // ← muted so autoplay is allowed
+                rel: 0
             },
             events: {
                 onReady: function (event) {
-                    // Muted autoplay — should succeed in all browsers
-                    event.target.mute();
                     event.target.setVolume(30);
-                    event.target.playVideo();
-                    startedMuted = true;
-                    musicToggle.classList.add('playing');
-                    musicStatus.textContent = 'Pause';
-                    musicPlaying = true;
                 },
                 onStateChange: function (event) {
                     if (event.data === YT.PlayerState.PLAYING) {
                         musicToggle.classList.add('playing');
                         musicStatus.textContent = 'Pause';
                         musicPlaying = true;
-                        // If we started muted, try to unmute now
-                        if (startedMuted) {
-                            tryUnmute();
-                        }
                     }
-                    if (event.data === YT.PlayerState.PAUSED && musicPlaying) {
-                        // Don't update UI for brief pauses during mute toggle
+                    if (event.data === YT.PlayerState.PAUSED || event.data === YT.PlayerState.ENDED) {
+                        musicToggle.classList.remove('playing');
+                        musicStatus.textContent = 'Play';
+                        musicPlaying = false;
                     }
                 }
             }
         });
     };
-
-    // Attempt to unmute. Browsers may block this until a user gesture.
-    function tryUnmute() {
-        if (!player || !startedMuted) return;
-        try {
-            player.unMute();
-            player.setVolume(30);
-            startedMuted = false; // successfully unmuted
-        } catch (e) { /* will retry on user interaction */ }
-    }
 
     musicToggle.addEventListener('click', function () {
         if (!player || typeof player.playVideo !== 'function') return;
@@ -209,35 +187,14 @@
             musicStatus.textContent = 'Play';
             musicPlaying = false;
         } else {
-            // Ensure unmuted when user explicitly clicks play
-            if (startedMuted) tryUnmute();
+            player.unMute();
+            player.setVolume(30);
             player.playVideo();
             musicToggle.classList.add('playing');
             musicStatus.textContent = 'Pause';
             musicPlaying = true;
         }
     });
-
-    // On first user interaction, unmute if we started muted
-    function unmuteOnInteraction() {
-        if (startedMuted && player && typeof player.unMute === 'function') {
-            tryUnmute();
-            // Also ensure playing in case it somehow paused
-            if (!musicPlaying) {
-                player.playVideo();
-                musicToggle.classList.add('playing');
-                musicStatus.textContent = 'Pause';
-                musicPlaying = true;
-            }
-        }
-        document.removeEventListener('click', unmuteOnInteraction);
-        document.removeEventListener('scroll', unmuteOnInteraction);
-        document.removeEventListener('keydown', unmuteOnInteraction);
-    }
-
-    document.addEventListener('click', unmuteOnInteraction, { once: true });
-    document.addEventListener('scroll', unmuteOnInteraction, { once: true });
-    document.addEventListener('keydown', unmuteOnInteraction, { once: true });
 
     /* ==========================================================
        5. SMOOTH SCROLL FOR HERO ARROW
